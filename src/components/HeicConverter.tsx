@@ -16,66 +16,95 @@ export default function HeicConverter() {
 
   const convertHeicToPng = async (file: File): Promise<ConvertedFile> => {
     try {
-      // Check WebAssembly support
-      if (typeof WebAssembly === 'undefined') {
-        throw new Error('WebAssembly is not supported in this browser. Please use a modern browser like Chrome, Firefox, Safari, or Edge.');
-      }
-
-      // Validate file size (limit to 50MB)
-      const maxSize = 50 * 1024 * 1024; // 50MB
+      // Validate file size (limit to 100MB)
+      const maxSize = 100 * 1024 * 1024; // 100MB
       if (file.size > maxSize) {
-        throw new Error('File too large. Please use files smaller than 50MB.');
-      }
-
-      // Dynamic import with proper error handling
-      const heic2anyModule = await import('heic2any');
-      const heic2any = heic2anyModule.default || heic2anyModule;
-      
-      if (typeof heic2any !== 'function') {
-        throw new Error('HEIC converter library failed to load properly');
+        throw new Error('File too large. Please use files smaller than 100MB.');
       }
 
       console.log(`Converting ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)...`);
 
-      const result = await heic2any({
-        blob: file,
-        toType: 'image/png',
-        quality: 1,
-      });
-      
-      const convertedBlob = Array.isArray(result) ? result[0] : result;
-      
-      if (!convertedBlob) {
-        throw new Error('Conversion failed - no output generated');
+      // Try heic-convert first (more reliable)
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const heicConvert = await import('heic-convert');
+        
+        console.log('Using heic-convert library...');
+
+        const outputBuffer = await heicConvert.default({
+          buffer: arrayBuffer,
+          format: 'PNG',
+          quality: 1,
+        });
+        
+        if (outputBuffer && outputBuffer.byteLength > 0) {
+          const convertedBlob = new Blob([outputBuffer], { type: 'image/png' });
+          const url = URL.createObjectURL(convertedBlob);
+          const name = file.name.replace(/\.heic$/i, '.png').replace(/\.heif$/i, '.png');
+          
+          console.log(`Successfully converted ${file.name} with heic-convert`);
+          
+          return {
+            name,
+            url,
+            blob: convertedBlob,
+          };
+        }
+      } catch (heicConvertError) {
+        console.log('heic-convert failed, trying heic2any...', heicConvertError);
       }
-      
-      // Validate the converted blob
-      if (!(convertedBlob instanceof Blob) || convertedBlob.size === 0) {
-        throw new Error('Invalid conversion result');
+
+      // Fallback to heic2any
+      try {
+        const heic2anyModule = await import('heic2any');
+        const heic2any = heic2anyModule.default || heic2anyModule;
+        
+        console.log('Using heic2any library as fallback...');
+
+        const result = await heic2any({
+          blob: file,
+          toType: 'image/png',
+          quality: 1,
+        });
+        
+        const convertedBlob = Array.isArray(result) ? result[0] : result;
+        
+        if (convertedBlob && convertedBlob instanceof Blob && convertedBlob.size > 0) {
+          const url = URL.createObjectURL(convertedBlob);
+          const name = file.name.replace(/\.heic$/i, '.png').replace(/\.heif$/i, '.png');
+          
+          console.log(`Successfully converted ${file.name} with heic2any`);
+          
+          return {
+            name,
+            url,
+            blob: convertedBlob,
+          };
+        }
+      } catch (heic2anyError) {
+        console.log('heic2any also failed:', heic2anyError);
       }
+
+      throw new Error('Both conversion libraries failed. The file may be corrupted or use an unsupported HEIC variant.');
       
-      const url = URL.createObjectURL(convertedBlob as Blob);
-      const name = file.name.replace(/\.heic?$/i, '.png').replace(/\.heif$/i, '.png');
-      
-      console.log(`Successfully converted ${file.name} to ${name}`);
-      
-      return {
-        name,
-        url,
-        blob: convertedBlob as Blob,
-      };
     } catch (error) {
       console.error('Conversion error for file:', file.name, error);
       
-      // Provide more specific error messages
       let errorMessage = 'Unknown error occurred';
       if (error instanceof Error) {
         errorMessage = error.message;
-      } else if (typeof error === 'string') {
-        errorMessage = error;
+        
+        // Add specific guidance for common errors
+        if (errorMessage.includes('invalid') || errorMessage.includes('corrupted')) {
+          errorMessage += ' Please ensure this is a valid HEIC/HEIF image file from an iPhone or compatible camera.';
+        } else if (errorMessage.includes('unsupported')) {
+          errorMessage += ' This HEIC variant might not be supported by current conversion libraries.';
+        } else if (errorMessage.includes('WebAssembly')) {
+          errorMessage += ' Please use a modern browser that supports WebAssembly (Chrome, Firefox, Safari, Edge).';
+        }
       }
       
-      throw new Error(`Failed to convert ${file.name}: ${errorMessage}`);
+      throw new Error(errorMessage);
     }
   };
 
@@ -275,24 +304,60 @@ export default function HeicConverter() {
       )}
 
       {!isConverting && convertedFiles.length === 0 && (
-        <div className="mt-12 text-center">
-          <div className="bg-gray-50 rounded-xl p-8">
-            <h3 className="text-xl font-semibold text-gray-800 mb-4">Why Convert HEIC to PNG?</h3>
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 text-left">
-              <div className="bg-white p-4 rounded-lg">
-                <span className="text-2xl mb-2 block">🌐</span>
-                <h4 className="font-medium text-gray-900 mb-1">Universal Compatibility</h4>
-                <p className="text-sm text-gray-600">PNG works on all devices and platforms</p>
+        <div className="mt-12 space-y-8">
+          {/* Benefits section */}
+          <div className="text-center">
+            <div className="bg-gray-50 rounded-xl p-8">
+              <h3 className="text-xl font-semibold text-gray-800 mb-4">Why Convert HEIC to PNG?</h3>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 text-left">
+                <div className="bg-white p-4 rounded-lg">
+                  <span className="text-2xl mb-2 block">🌐</span>
+                  <h4 className="font-medium text-gray-900 mb-1">Universal Compatibility</h4>
+                  <p className="text-sm text-gray-600">PNG works on all devices and platforms</p>
+                </div>
+                <div className="bg-white p-4 rounded-lg">
+                  <span className="text-2xl mb-2 block">🚀</span>
+                  <h4 className="font-medium text-gray-900 mb-1">Web Friendly</h4>
+                  <p className="text-sm text-gray-600">Perfect for websites and social media</p>
+                </div>
+                <div className="bg-white p-4 rounded-lg">
+                  <span className="text-2xl mb-2 block">🔒</span>
+                  <h4 className="font-medium text-gray-900 mb-1">Privacy First</h4>
+                  <p className="text-sm text-gray-600">All processing happens in your browser</p>
+                </div>
               </div>
-              <div className="bg-white p-4 rounded-lg">
-                <span className="text-2xl mb-2 block">🚀</span>
-                <h4 className="font-medium text-gray-900 mb-1">Web Friendly</h4>
-                <p className="text-sm text-gray-600">Perfect for websites and social media</p>
-              </div>
-              <div className="bg-white p-4 rounded-lg">
-                <span className="text-2xl mb-2 block">🔒</span>
-                <h4 className="font-medium text-gray-900 mb-1">Privacy First</h4>
-                <p className="text-sm text-gray-600">All processing happens in your browser</p>
+            </div>
+          </div>
+
+          {/* Troubleshooting section */}
+          <div className="text-center">
+            <div className="bg-blue-50 rounded-xl p-6">
+              <h3 className="text-lg font-semibold text-blue-900 mb-4">💡 Troubleshooting Tips</h3>
+              <div className="text-left space-y-3 max-w-3xl mx-auto">
+                <div className="flex items-start gap-3">
+                  <span className="text-blue-600 mt-1">•</span>
+                  <p className="text-sm text-blue-800">
+                    <strong>File format:</strong> Ensure your files have .HEIC or .HEIF extensions and are actual photos from iPhone/iPad
+                  </p>
+                </div>
+                <div className="flex items-start gap-3">
+                  <span className="text-blue-600 mt-1">•</span>
+                  <p className="text-sm text-blue-800">
+                    <strong>Browser support:</strong> Use Chrome, Firefox, Safari, or Edge for best compatibility
+                  </p>
+                </div>
+                <div className="flex items-start gap-3">
+                  <span className="text-blue-600 mt-1">•</span>
+                  <p className="text-sm text-blue-800">
+                    <strong>File size:</strong> Large files (&gt;50MB) may take longer or fail to convert
+                  </p>
+                </div>
+                <div className="flex items-start gap-3">
+                  <span className="text-blue-600 mt-1">•</span>
+                  <p className="text-sm text-blue-800">
+                    <strong>If conversion fails:</strong> Try refreshing the page and uploading one file at a time
+                  </p>
+                </div>
               </div>
             </div>
           </div>
