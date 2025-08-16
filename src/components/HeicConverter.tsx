@@ -10,9 +10,98 @@ interface ConvertedFile {
   blob: Blob;
 }
 
+// Helper function to analyze HEIC file details
+const analyzeHeicFile = (uint8Array: Uint8Array) => {
+  const analysis = {
+    fileSize: uint8Array.length,
+    format: 'unknown',
+    brand: 'unknown',
+    compatibleBrands: [] as string[],
+    hasHevcTrack: false,
+    isHighEfficiency: false,
+  };
+
+  try {
+    // Check file type box (ftyp)
+    if (uint8Array[4] === 0x66 && uint8Array[5] === 0x74 && uint8Array[6] === 0x79 && uint8Array[7] === 0x70) {
+      // Get major brand (4 bytes after 'ftyp')
+      const brandBytes = uint8Array.slice(8, 12);
+      analysis.brand = String.fromCharCode(...brandBytes);
+      
+      // Check for different HEIC variants
+      if (analysis.brand === 'heic') {
+        analysis.format = 'HEIC (Standard)';
+      } else if (analysis.brand === 'heix') {
+        analysis.format = 'HEIC (Extended Range)';
+        analysis.isHighEfficiency = true;
+      } else if (analysis.brand === 'hevc') {
+        analysis.format = 'HEVC Image';
+        analysis.hasHevcTrack = true;
+      } else if (analysis.brand === 'hevx') {
+        analysis.format = 'HEVC Extended';
+        analysis.hasHevcTrack = true;
+        analysis.isHighEfficiency = true;
+      } else if (analysis.brand === 'mif1') {
+        analysis.format = 'HEIF (Multi-Image)';
+      }
+      
+      // Look for compatible brands
+      let offset = 16; // Start after major brand
+      while (offset + 4 <= uint8Array.length && offset < 100) { // Check first 100 bytes
+        const compatBrand = String.fromCharCode(...uint8Array.slice(offset, offset + 4));
+        if (compatBrand.match(/^[a-zA-Z0-9]{4}$/)) {
+          analysis.compatibleBrands.push(compatBrand);
+        }
+        offset += 4;
+      }
+    }
+  } catch (error) {
+    console.warn('Error analyzing HEIC file:', error);
+  }
+
+  return analysis;
+};
+
+// Helper function to create detailed error messages
+const createDetailedErrorMessage = (analysis: ReturnType<typeof analyzeHeicFile>, fileName: string) => {
+  let message = `Unable to convert ${fileName}.\n\n`;
+  
+  message += `📋 File Analysis:\n`;
+  message += `• Format: ${analysis.format}\n`;
+  message += `• Brand: ${analysis.brand}\n`;
+  message += `• File Size: ${(analysis.fileSize / 1024 / 1024).toFixed(2)} MB\n`;
+  
+  if (analysis.isHighEfficiency) {
+    message += `• ⚠️ High Efficiency encoding detected\n`;
+  }
+  
+  if (analysis.hasHevcTrack) {
+    message += `• ⚠️ HEVC video track detected\n`;
+  }
+  
+  message += `\n🔧 Recommended Solutions:\n`;
+  
+  if (analysis.brand === 'heix' || analysis.brand === 'hevx' || analysis.isHighEfficiency) {
+    message += `1. This appears to be a High Efficiency HEIC file that requires newer codecs\n`;
+    message += `2. Convert to JPEG on your iPhone: Photos app → Select image → Share → Save to Files (choose JPEG)\n`;
+  } else if (analysis.brand === 'hevc' || analysis.hasHevcTrack) {
+    message += `1. This appears to be a HEVC-based image that may not be supported in browsers\n`;
+    message += `2. Try using Safari browser (better HEIC support)\n`;
+  } else {
+    message += `1. Try converting to JPEG on your device first\n`;
+    message += `2. Use a different browser (Safari has better HEIC support)\n`;
+  }
+  
+  message += `3. Try with a standard HEIC file from an older iPhone model\n`;
+  message += `4. Use online conversion tools as an alternative\n`;
+  
+  return message;
+};
+
 export default function HeicConverter() {
   const [convertedFiles, setConvertedFiles] = useState<ConvertedFile[]>([]);
   const [isConverting, setIsConverting] = useState(false);
+  const [fileAnalysis, setFileAnalysis] = useState<ReturnType<typeof analyzeHeicFile> | null>(null);
 
   const convertHeicToPng = useCallback(async (file: File): Promise<ConvertedFile> => {
     try {
@@ -115,131 +204,77 @@ export default function HeicConverter() {
           (heic2anyError instanceof Error && heic2anyError.message.includes('format not supported'));
         
         if (isFormatNotSupported) {
-          console.log('heic2any format not supported, trying heic-decode as fallback...');
+          console.log('heic2any format not supported, analyzing file and trying browser native support...');
+          
+          // Analyze the HEIC file to provide better user guidance
+          const heicAnalysis = analyzeHeicFile(uint8Array);
+          console.log('HEIC file analysis:', heicAnalysis);
+          setFileAnalysis(heicAnalysis);
           
           try {
-            const heicDecodeModule = await import('heic-decode');
-            
-            console.log('heic-decode loaded, attempting conversion...');
-            
-            // Get the decode function
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
-            const decode = heicDecodeModule.default || (heicDecodeModule as unknown as { decode: Function }).decode;
-            
-            if (typeof decode !== 'function') {
-              throw new Error('heic-decode library API not found or not a function');
-            }
-            
-            console.log('decode function found, starting conversion...');
-            
-            // Decode using heic-decode with correct API
-            const decodedData = await decode({ 
-              buffer: arrayBuffer.slice(0) // Create a copy of the buffer
-            });
-            
-            const { data, width, height } = decodedData;
-            
-            console.log(`heic-decode successful: ${width}x${height}`);
-            
-            // Create canvas and draw the decoded image data
+            // Try browser native support as fallback
+            const img = document.createElement('img');
             const canvas = document.createElement('canvas');
-            canvas.width = width;
-            canvas.height = height;
-            
             const ctx = canvas.getContext('2d');
+            
             if (!ctx) {
-              throw new Error('Could not get canvas context');
+              throw new Error('Canvas not supported');
             }
-            
-            // Create ImageData and put it on canvas
-            const imageData = new ImageData(new Uint8ClampedArray(data), width, height);
-            ctx.putImageData(imageData, 0, 0);
-            
-            // Convert canvas to PNG blob
+
             return new Promise<ConvertedFile>((resolve, reject) => {
-              canvas.toBlob((blob) => {
-                if (blob && blob.size > 0) {
-                  const url = URL.createObjectURL(blob);
-                  const name = file.name.replace(/\.heic$/i, '.png').replace(/\.heif$/i, '.png');
+              img.onload = () => {
+                try {
+                  console.log('✅ Browser can read this HEIC file natively!');
+                  canvas.width = img.naturalWidth || img.width;
+                  canvas.height = img.naturalHeight || img.height;
+                  ctx.drawImage(img, 0, 0);
                   
-                  console.log(`✅ heic-decode conversion successful: ${name} (${(blob.size / 1024).toFixed(1)}KB)`);
-                  
-                  resolve({
-                    name,
-                    url,
-                    blob,
-                  });
-                } else {
-                  reject(new Error('Canvas to blob conversion failed'));
+                  canvas.toBlob((blob) => {
+                    URL.revokeObjectURL(img.src); // Clean up
+                    
+                    if (blob && blob.size > 0) {
+                      const url = URL.createObjectURL(blob);
+                      const name = file.name.replace(/\.heic$/i, '.png').replace(/\.heif$/i, '.png');
+                      
+                      console.log(`✅ Browser native conversion successful: ${name}`);
+                      
+                      resolve({
+                        name,
+                        url,
+                        blob,
+                      });
+                    } else {
+                      reject(new Error('Canvas to blob conversion failed'));
+                    }
+                  }, 'image/png', 1.0);
+                } catch (error) {
+                  URL.revokeObjectURL(img.src);
+                  reject(error);
                 }
-              }, 'image/png', 1.0);
+              };
+              
+              img.onerror = () => {
+                URL.revokeObjectURL(img.src);
+                
+                // Provide detailed error message based on file analysis
+                const errorMessage = createDetailedErrorMessage(heicAnalysis, file.name);
+                reject(new Error(errorMessage));
+              };
+              
+              img.src = URL.createObjectURL(file);
+              
+              // Timeout after 15 seconds
+              setTimeout(() => {
+                URL.revokeObjectURL(img.src);
+                const errorMessage = createDetailedErrorMessage(heicAnalysis, file.name);
+                reject(new Error(`Conversion timeout. ${errorMessage}`));
+              }, 15000);
             });
             
-          } catch (heicDecodeError) {
-            console.error('❌ heic-decode also failed:', heicDecodeError);
-            
-            // Since both libraries failed, let's try a different approach
-            console.log('Trying alternative canvas-based approach...');
-            
-            try {
-              // Try browser native support as last resort
-              const img = document.createElement('img');
-              const canvas = document.createElement('canvas');
-              const ctx = canvas.getContext('2d');
-              
-              if (!ctx) {
-                throw new Error('Canvas not supported');
-              }
-
-              return new Promise<ConvertedFile>((resolve, reject) => {
-                img.onload = () => {
-                  try {
-                    canvas.width = img.naturalWidth || img.width;
-                    canvas.height = img.naturalHeight || img.height;
-                    ctx.drawImage(img, 0, 0);
-                    
-                    canvas.toBlob((blob) => {
-                      URL.revokeObjectURL(img.src); // Clean up
-                      
-                      if (blob && blob.size > 0) {
-                        const url = URL.createObjectURL(blob);
-                        const name = file.name.replace(/\.heic$/i, '.png').replace(/\.heif$/i, '.png');
-                        
-                        console.log(`✅ Browser native conversion successful: ${name}`);
-                        
-                        resolve({
-                          name,
-                          url,
-                          blob,
-                        });
-                      } else {
-                        reject(new Error('Canvas to blob conversion failed'));
-                      }
-                    }, 'image/png', 1.0);
-                  } catch (error) {
-                    URL.revokeObjectURL(img.src);
-                    reject(error);
-                  }
-                };
-                
-                img.onerror = () => {
-                  URL.revokeObjectURL(img.src);
-                  reject(new Error('All conversion methods failed. Your browser or this specific HEIC file variant is not supported.'));
-                };
-                
-                img.src = URL.createObjectURL(file);
-                
-                // Timeout after 10 seconds
-                setTimeout(() => {
-                  URL.revokeObjectURL(img.src);
-                  reject(new Error('Conversion timeout'));
-                }, 10000);
-              });
-              
-            } catch (nativeError) {
-              console.error('❌ Native browser conversion also failed:', nativeError);
-              throw new Error(`All conversion methods failed. This HEIC file variant is not supported by available libraries. Try:\n1. Converting to JPEG on your iPhone first\n2. Using a different HEIC file\n3. Using a different browser (Safari, Chrome, Firefox)`);
-            }
+          } catch (nativeError) {
+            console.error('❌ Native browser conversion also failed:', nativeError);
+            const errorMessage = createDetailedErrorMessage(heicAnalysis, file.name);
+            throw new Error(errorMessage);
           }
         } else {
           // Re-throw other heic2any errors with better messages
@@ -448,6 +483,39 @@ export default function HeicConverter() {
           <div className="inline-block animate-spin rounded-full h-12 w-12 border-4 border-blue-200 border-t-blue-600"></div>
           <p className="mt-4 text-lg text-blue-700 font-medium">Converting your files...</p>
           <p className="text-sm text-blue-600">This may take a moment for larger files</p>
+        </div>
+      )}
+
+      {fileAnalysis && (
+        <div className="mt-8 bg-yellow-50 border border-yellow-200 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-yellow-800 mb-4">📋 File Analysis Results</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <div>
+              <p><strong>Format:</strong> {fileAnalysis.format}</p>
+              <p><strong>Brand:</strong> {fileAnalysis.brand}</p>
+              <p><strong>Size:</strong> {(fileAnalysis.fileSize / 1024 / 1024).toFixed(2)} MB</p>
+            </div>
+            <div>
+              {fileAnalysis.isHighEfficiency && (
+                <p className="text-yellow-700">⚠️ High Efficiency encoding detected</p>
+              )}
+              {fileAnalysis.hasHevcTrack && (
+                <p className="text-yellow-700">⚠️ HEVC video track detected</p>
+              )}
+            </div>
+          </div>
+          
+          <div className="mt-4 p-4 bg-yellow-100 rounded-lg">
+            <h4 className="font-medium text-yellow-800 mb-2">💡 Recommended Solution:</h4>
+            <p className="text-sm text-yellow-700">
+              {fileAnalysis.isHighEfficiency || fileAnalysis.brand === 'heix' || fileAnalysis.brand === 'hevx' 
+                ? "This High Efficiency HEIC file requires newer codecs. Convert to JPEG on your iPhone: Photos app → Select image → Share → Save to Files (choose JPEG format)."
+                : fileAnalysis.hasHevcTrack 
+                ? "This HEVC-based image may not be supported in browsers. Try using Safari browser or convert to JPEG first."
+                : "Try converting to JPEG on your device first, or use Safari browser for better HEIC support."
+              }
+            </p>
+          </div>
         </div>
       )}
 
