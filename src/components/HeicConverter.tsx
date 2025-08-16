@@ -14,6 +14,59 @@ export default function HeicConverter() {
   const [convertedFiles, setConvertedFiles] = useState<ConvertedFile[]>([]);
   const [isConverting, setIsConverting] = useState(false);
 
+  // Simple method to try browser native HEIC support first
+  const tryNativeHeicConversion = async (file: File): Promise<ConvertedFile | null> => {
+    try {
+      console.log('Trying native browser HEIC support...');
+      
+      // Create image element to test if browser can handle HEIC
+      const img = document.createElement('img');
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      
+      if (!ctx) {
+        throw new Error('Canvas not supported');
+      }
+
+      return new Promise((resolve, reject) => {
+        img.onload = () => {
+          try {
+            console.log('Browser can read HEIC natively!');
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            ctx.drawImage(img, 0, 0);
+            
+            canvas.toBlob((blob) => {
+              if (blob) {
+                const url = URL.createObjectURL(blob);
+                const name = file.name.replace(/\.heic$/i, '.png').replace(/\.heif$/i, '.png');
+                resolve({ name, url, blob });
+              } else {
+                reject(new Error('Canvas to blob conversion failed'));
+              }
+            }, 'image/png', 1.0);
+          } catch (error) {
+            reject(error);
+          }
+        };
+        
+        img.onerror = () => {
+          reject(new Error('Browser cannot read HEIC natively'));
+        };
+        
+        img.src = URL.createObjectURL(file);
+        
+        // Timeout after 5 seconds
+        setTimeout(() => {
+          reject(new Error('Native conversion timeout'));
+        }, 5000);
+      });
+    } catch (error) {
+      console.log('Native HEIC conversion not available:', error);
+      return null;
+    }
+  };
+
   const convertHeicToPng = async (file: File): Promise<ConvertedFile> => {
     try {
       // Validate file size (limit to 100MB)
@@ -24,12 +77,64 @@ export default function HeicConverter() {
 
       console.log(`Converting ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)...`);
 
-      // Try heic-convert first (more reliable)
+      // Try native browser support first (works in newer Safari)
       try {
+        const nativeResult = await tryNativeHeicConversion(file);
+        if (nativeResult) {
+          console.log('✅ Native browser conversion successful');
+          return nativeResult;
+        }
+      } catch (nativeError) {
+        console.log('Native conversion failed:', nativeError);
+      }
+
+      // Try heic2any first (more stable)
+      try {
+        console.log('Trying heic2any library...');
+        const heic2anyModule = await import('heic2any');
+        const heic2any = heic2anyModule.default || heic2anyModule;
+        
+        if (typeof heic2any !== 'function') {
+          throw new Error('heic2any library not properly loaded');
+        }
+
+        console.log('heic2any loaded, starting conversion...');
+
+        const result = await heic2any({
+          blob: file,
+          toType: 'image/png',
+          quality: 1,
+        });
+        
+        console.log('heic2any conversion result:', result);
+        
+        const convertedBlob = Array.isArray(result) ? result[0] : result;
+        
+        if (convertedBlob && convertedBlob instanceof Blob && convertedBlob.size > 0) {
+          const url = URL.createObjectURL(convertedBlob);
+          const name = file.name.replace(/\.heic$/i, '.png').replace(/\.heif$/i, '.png');
+          
+          console.log(`✅ heic2any conversion successful: ${(convertedBlob.size / 1024).toFixed(1)}KB`);
+          
+          return {
+            name,
+            url,
+            blob: convertedBlob,
+          };
+        } else {
+          throw new Error('heic2any produced invalid result');
+        }
+      } catch (heic2anyError) {
+        console.log('❌ heic2any failed:', heic2anyError);
+      }
+
+      // Try heic-convert as backup
+      try {
+        console.log('Trying heic-convert library...');
         const arrayBuffer = await file.arrayBuffer();
         const heicConvert = await import('heic-convert');
         
-        console.log('Using heic-convert library...');
+        console.log('heic-convert loaded, converting...');
 
         const outputBuffer = await heicConvert.default({
           buffer: arrayBuffer,
@@ -42,66 +147,28 @@ export default function HeicConverter() {
           const url = URL.createObjectURL(convertedBlob);
           const name = file.name.replace(/\.heic$/i, '.png').replace(/\.heif$/i, '.png');
           
-          console.log(`Successfully converted ${file.name} with heic-convert`);
+          console.log(`✅ heic-convert successful: ${(convertedBlob.size / 1024).toFixed(1)}KB`);
           
           return {
             name,
             url,
             blob: convertedBlob,
           };
+        } else {
+          throw new Error('heic-convert produced empty result');
         }
       } catch (heicConvertError) {
-        console.log('heic-convert failed, trying heic2any...', heicConvertError);
+        console.log('❌ heic-convert failed:', heicConvertError);
       }
 
-      // Fallback to heic2any
-      try {
-        const heic2anyModule = await import('heic2any');
-        const heic2any = heic2anyModule.default || heic2anyModule;
-        
-        console.log('Using heic2any library as fallback...');
-
-        const result = await heic2any({
-          blob: file,
-          toType: 'image/png',
-          quality: 1,
-        });
-        
-        const convertedBlob = Array.isArray(result) ? result[0] : result;
-        
-        if (convertedBlob && convertedBlob instanceof Blob && convertedBlob.size > 0) {
-          const url = URL.createObjectURL(convertedBlob);
-          const name = file.name.replace(/\.heic$/i, '.png').replace(/\.heif$/i, '.png');
-          
-          console.log(`Successfully converted ${file.name} with heic2any`);
-          
-          return {
-            name,
-            url,
-            blob: convertedBlob,
-          };
-        }
-      } catch (heic2anyError) {
-        console.log('heic2any also failed:', heic2anyError);
-      }
-
-      throw new Error('Both conversion libraries failed. The file may be corrupted or use an unsupported HEIC variant.');
+      throw new Error('All conversion methods failed. This may not be a valid HEIC file or your browser may not support the required features.');
       
     } catch (error) {
-      console.error('Conversion error for file:', file.name, error);
+      console.error('❌ Final conversion error for file:', file.name, error);
       
-      let errorMessage = 'Unknown error occurred';
+      let errorMessage = 'Conversion failed';
       if (error instanceof Error) {
         errorMessage = error.message;
-        
-        // Add specific guidance for common errors
-        if (errorMessage.includes('invalid') || errorMessage.includes('corrupted')) {
-          errorMessage += ' Please ensure this is a valid HEIC/HEIF image file from an iPhone or compatible camera.';
-        } else if (errorMessage.includes('unsupported')) {
-          errorMessage += ' This HEIC variant might not be supported by current conversion libraries.';
-        } else if (errorMessage.includes('WebAssembly')) {
-          errorMessage += ' Please use a modern browser that supports WebAssembly (Chrome, Firefox, Safari, Edge).';
-        }
       }
       
       throw new Error(errorMessage);
@@ -109,45 +176,82 @@ export default function HeicConverter() {
   };
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
+    console.log('=== HEIC Conversion Debug ===');
+    console.log('Files dropped:', acceptedFiles.length);
+    
     if (acceptedFiles.length === 0) {
+      console.log('No files accepted by dropzone');
       alert('Please select valid HEIC/HEIF files.');
       return;
     }
 
+    // Log detailed file information
+    acceptedFiles.forEach((file, index) => {
+      console.log(`File ${index + 1}:`, {
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        lastModified: new Date(file.lastModified).toISOString(),
+        extension: file.name.split('.').pop()?.toLowerCase()
+      });
+    });
+
+    // Check browser capabilities
+    console.log('Browser capabilities:', {
+      webAssembly: typeof WebAssembly !== 'undefined',
+      arrayBuffer: typeof ArrayBuffer !== 'undefined',
+      blob: typeof Blob !== 'undefined',
+      url: typeof URL !== 'undefined'
+    });
+
     setIsConverting(true);
     const successfulConversions: ConvertedFile[] = [];
     const failedFiles: string[] = [];
+    const detailedErrors: string[] = [];
     
     try {
       // Process files one by one to handle individual failures
       for (const file of acceptedFiles) {
         try {
+          console.log(`\n--- Starting conversion for ${file.name} ---`);
           const converted = await convertHeicToPng(file);
+          console.log(`✅ Successfully converted ${file.name}`);
           successfulConversions.push(converted);
         } catch (error) {
-          console.error('Failed to convert:', file.name, error);
+          console.error(`❌ Failed to convert ${file.name}:`, error);
           failedFiles.push(file.name);
+          if (error instanceof Error) {
+            detailedErrors.push(`${file.name}: ${error.message}`);
+          }
         }
       }
+      
+      console.log('Conversion summary:', {
+        successful: successfulConversions.length,
+        failed: failedFiles.length,
+        total: acceptedFiles.length
+      });
       
       if (successfulConversions.length > 0) {
         setConvertedFiles(prev => [...prev, ...successfulConversions]);
       }
       
       if (failedFiles.length > 0) {
-        const message = failedFiles.length === acceptedFiles.length 
-          ? 'Failed to convert any files. Please ensure you are uploading valid HEIC/HEIF images.'
-          : `Successfully converted ${successfulConversions.length} files. Failed to convert: ${failedFiles.join(', ')}`;
-        alert(message);
+        // Show detailed error in console and simplified version in alert
+        console.error('Detailed conversion errors:', detailedErrors);
+        alert(failedFiles.length === acceptedFiles.length 
+          ? 'Failed to convert any files. Please check the browser console (F12) for detailed error information.'
+          : `Converted ${successfulConversions.length}/${acceptedFiles.length} files. Check console for error details.`);
       }
       
     } catch (error) {
       console.error('Unexpected error during conversion:', error);
-      alert('An unexpected error occurred. Please try again or refresh the page.');
+      alert('An unexpected error occurred. Please check the console (F12) for details, then try refreshing the page.');
     } finally {
       setIsConverting(false);
+      console.log('=== Conversion process completed ===\n');
     }
-  }, []);
+  }, [convertHeicToPng]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
