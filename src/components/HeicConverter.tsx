@@ -98,10 +98,41 @@ const createDetailedErrorMessage = (analysis: ReturnType<typeof analyzeHeicFile>
   return message;
 };
 
+// Browser detection helper
+const detectBrowser = () => {
+  if (typeof window === 'undefined') return { name: 'unknown', hasNativeHeicSupport: false };
+  
+  const userAgent = window.navigator.userAgent;
+  const isSafari = /Safari/.test(userAgent) && /Apple Computer/.test(window.navigator.vendor);
+  const isChrome = /Chrome/.test(userAgent) && /Google Inc/.test(window.navigator.vendor);
+  const isFirefox = /Firefox/.test(userAgent);
+  const isEdge = /Edg/.test(userAgent);
+  
+  let browserName = 'Unknown';
+  let hasNativeHeicSupport = false;
+  
+  if (isSafari) {
+    browserName = 'Safari';
+    hasNativeHeicSupport = true; // Safari has native HEIC support
+  } else if (isChrome) {
+    browserName = 'Chrome';
+    hasNativeHeicSupport = false; // Chrome requires libraries
+  } else if (isFirefox) {
+    browserName = 'Firefox';
+    hasNativeHeicSupport = false;
+  } else if (isEdge) {
+    browserName = 'Edge';
+    hasNativeHeicSupport = false;
+  }
+  
+  return { name: browserName, hasNativeHeicSupport };
+};
+
 export default function HeicConverter() {
   const [convertedFiles, setConvertedFiles] = useState<ConvertedFile[]>([]);
   const [isConverting, setIsConverting] = useState(false);
   const [fileAnalysis, setFileAnalysis] = useState<ReturnType<typeof analyzeHeicFile> | null>(null);
+  const [browserInfo] = useState(() => detectBrowser());
 
   const convertHeicToPng = useCallback(async (file: File): Promise<ConvertedFile> => {
     try {
@@ -140,8 +171,72 @@ export default function HeicConverter() {
       }
       
       console.log('✅ File validated as HEIC/HEIF format');
+      console.log('Browser info:', browserInfo);
 
-      // Try heic2any first
+      // For Safari, try native support first since it has better HEIC support
+      if (browserInfo.hasNativeHeicSupport) {
+        console.log('Safari detected - trying native HEIC support first...');
+        
+        try {
+          const img = document.createElement('img');
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          
+          if (!ctx) {
+            throw new Error('Canvas not supported');
+          }
+
+          const nativeResult = await new Promise<ConvertedFile>((resolve, reject) => {
+            img.onload = () => {
+              try {
+                console.log('✅ Safari native HEIC conversion successful!');
+                canvas.width = img.naturalWidth || img.width;
+                canvas.height = img.naturalHeight || img.height;
+                ctx.drawImage(img, 0, 0);
+                
+                canvas.toBlob((blob) => {
+                  URL.revokeObjectURL(img.src);
+                  
+                  if (blob && blob.size > 0) {
+                    const url = URL.createObjectURL(blob);
+                    const name = file.name.replace(/\.heic$/i, '.png').replace(/\.heif$/i, '.png');
+                    
+                    resolve({
+                      name,
+                      url,
+                      blob,
+                    });
+                  } else {
+                    reject(new Error('Canvas to blob conversion failed'));
+                  }
+                }, 'image/png', 1.0);
+              } catch (error) {
+                URL.revokeObjectURL(img.src);
+                reject(error);
+              }
+            };
+            
+            img.onerror = () => {
+              URL.revokeObjectURL(img.src);
+              reject(new Error('Safari native HEIC support failed'));
+            };
+            
+            img.src = URL.createObjectURL(file);
+            
+            setTimeout(() => {
+              URL.revokeObjectURL(img.src);
+              reject(new Error('Safari native conversion timeout'));
+            }, 10000);
+          });
+          
+          return nativeResult;
+          
+        } catch (safariError) {
+          console.log('Safari native support failed, falling back to heic2any:', safariError);
+        }
+      }
+
+      // Try heic2any for all browsers (fallback for Safari, primary for others)
       try {
         console.log('Starting heic2any conversion...');
         
@@ -303,7 +398,7 @@ export default function HeicConverter() {
       
       throw new Error(errorMessage);
     }
-  }, []);
+  }, [browserInfo]);
 
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     console.log('=== HEIC Conversion Debug ===');
@@ -446,6 +541,29 @@ export default function HeicConverter() {
         <div className="mt-4 text-sm text-gray-500">
           ✅ Free • ✅ Fast • ✅ No file size limits • ✅ Privacy focused
         </div>
+        
+        {/* Browser compatibility notice */}
+        {browserInfo.name !== 'unknown' && (
+          <div className={`mt-4 p-3 rounded-lg ${
+            browserInfo.hasNativeHeicSupport 
+              ? 'bg-green-50 border border-green-200' 
+              : 'bg-yellow-50 border border-yellow-200'
+          }`}>
+            <p className={`text-sm font-medium ${
+              browserInfo.hasNativeHeicSupport ? 'text-green-700' : 'text-yellow-700'
+            }`}>
+              {browserInfo.hasNativeHeicSupport 
+                ? `🎉 ${browserInfo.name} detected - Excellent HEIC support!`
+                : `⚠️ ${browserInfo.name} detected - Limited HEIC support. Consider using Safari for better compatibility.`
+              }
+            </p>
+            {!browserInfo.hasNativeHeicSupport && (
+              <p className="text-xs text-yellow-600 mt-1">
+                Some HEIC files may not convert. Safari has native HEIC support and works better.
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       <div
@@ -610,7 +728,7 @@ export default function HeicConverter() {
                 <div className="flex items-start gap-3">
                   <span className="text-blue-600 mt-1">•</span>
                   <p className="text-sm text-blue-800">
-                    <strong>Browser support:</strong> Use Chrome, Firefox, Safari, or Edge for best compatibility
+                    <strong>Browser support:</strong> Safari has the best HEIC support (native), while Chrome/Firefox require conversion libraries
                   </p>
                 </div>
                 <div className="flex items-start gap-3">
