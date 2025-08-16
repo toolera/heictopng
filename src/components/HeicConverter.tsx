@@ -52,6 +52,7 @@ export default function HeicConverter() {
       
       console.log('✅ File validated as HEIC/HEIF format');
 
+      // Try heic2any first
       try {
         console.log('Starting heic2any conversion...');
         
@@ -69,7 +70,7 @@ export default function HeicConverter() {
         const conversionResult = await heic2any({
           blob: file,
           toType: 'image/png',
-          quality: 0.92, // Slightly reduce quality for better performance
+          quality: 0.92,
         });
         
         console.log('heic2any conversion completed, processing result...');
@@ -93,14 +94,10 @@ export default function HeicConverter() {
           throw new Error('Conversion result is empty');
         }
         
-        if (convertedBlob.type !== 'image/png') {
-          console.warn(`Expected PNG but got ${convertedBlob.type}, proceeding anyway...`);
-        }
-        
         const url = URL.createObjectURL(convertedBlob);
         const name = file.name.replace(/\.heic$/i, '.png').replace(/\.heif$/i, '.png');
         
-        console.log(`✅ Conversion successful: ${name} (${(convertedBlob.size / 1024).toFixed(1)}KB)`);
+        console.log(`✅ heic2any conversion successful: ${name} (${(convertedBlob.size / 1024).toFixed(1)}KB)`);
         
         return {
           name,
@@ -108,24 +105,83 @@ export default function HeicConverter() {
           blob: convertedBlob,
         };
         
-      } catch (conversionError) {
-        console.error('❌ heic2any conversion failed:', conversionError);
+      } catch (heic2anyError) {
+        console.error('❌ heic2any conversion failed:', heic2anyError);
         
-        // Provide more specific error messages
-        let errorMessage = 'Conversion failed';
-        if (conversionError instanceof Error) {
-          errorMessage = conversionError.message;
+        // Check if it's the "format not supported" error
+        const isFormatNotSupported = heic2anyError && 
+          (typeof heic2anyError === 'object') && 
+          ('code' in heic2anyError && heic2anyError.code === 2) ||
+          (heic2anyError instanceof Error && heic2anyError.message.includes('format not supported'));
+        
+        if (isFormatNotSupported) {
+          console.log('heic2any format not supported, trying heic-decode as fallback...');
           
-          if (errorMessage.includes('WebAssembly')) {
-            errorMessage = 'WebAssembly is required but not available. Please use a modern browser like Chrome, Firefox, Safari, or Edge.';
-          } else if (errorMessage.includes('unsupported')) {
-            errorMessage = 'This HEIC file variant is not supported. Try a different HEIC file or use a different conversion tool.';
-          } else if (errorMessage.includes('decode')) {
-            errorMessage = 'Failed to decode HEIC file. The file may be corrupted or not a valid HEIC image.';
+          try {
+            const heicDecode = await import('heic-decode');
+            
+            console.log('heic-decode loaded, attempting conversion...');
+            
+            // Decode using heic-decode
+            const { data, width, height } = await heicDecode.decode({ 
+              buffer: arrayBuffer.slice(0) // Create a copy of the buffer
+            });
+            
+            console.log(`heic-decode successful: ${width}x${height}`);
+            
+            // Create canvas and draw the decoded image data
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            
+            const ctx = canvas.getContext('2d');
+            if (!ctx) {
+              throw new Error('Could not get canvas context');
+            }
+            
+            // Create ImageData and put it on canvas
+            const imageData = new ImageData(new Uint8ClampedArray(data), width, height);
+            ctx.putImageData(imageData, 0, 0);
+            
+            // Convert canvas to PNG blob
+            return new Promise<ConvertedFile>((resolve, reject) => {
+              canvas.toBlob((blob) => {
+                if (blob && blob.size > 0) {
+                  const url = URL.createObjectURL(blob);
+                  const name = file.name.replace(/\.heic$/i, '.png').replace(/\.heif$/i, '.png');
+                  
+                  console.log(`✅ heic-decode conversion successful: ${name} (${(blob.size / 1024).toFixed(1)}KB)`);
+                  
+                  resolve({
+                    name,
+                    url,
+                    blob,
+                  });
+                } else {
+                  reject(new Error('Canvas to blob conversion failed'));
+                }
+              }, 'image/png', 1.0);
+            });
+            
+          } catch (heicDecodeError) {
+            console.error('❌ heic-decode also failed:', heicDecodeError);
+            throw new Error(`Both conversion libraries failed. This HEIC file variant may not be supported. Try converting the image to JPEG on your device first, or use a different HEIC file.`);
           }
+        } else {
+          // Re-throw other heic2any errors with better messages
+          let errorMessage = 'heic2any conversion failed';
+          if (heic2anyError instanceof Error) {
+            errorMessage = heic2anyError.message;
+            
+            if (errorMessage.includes('WebAssembly')) {
+              errorMessage = 'WebAssembly is required but not available. Please use a modern browser like Chrome, Firefox, Safari, or Edge.';
+            } else if (errorMessage.includes('decode')) {
+              errorMessage = 'Failed to decode HEIC file. The file may be corrupted or not a valid HEIC image.';
+            }
+          }
+          
+          throw new Error(errorMessage);
         }
-        
-        throw new Error(errorMessage);
       }
       
     } catch (error) {
