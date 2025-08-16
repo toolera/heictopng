@@ -486,7 +486,7 @@ export default function HeicConverter() {
                 <div className="flex items-start gap-3">
                   <span className="text-blue-600 mt-1">•</span>
                   <p className="text-sm text-blue-800">
-                    <strong>Alternative:</strong> You can also use the built-in "Export" feature on iPhone to convert to JPEG before uploading
+                    <strong>Alternative:</strong> You can also use the built-in &ldquo;Export&rdquo; feature on iPhone to convert to JPEG before uploading
                   </p>
                 </div>
               </div>
