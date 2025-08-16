@@ -118,14 +118,26 @@ export default function HeicConverter() {
           console.log('heic2any format not supported, trying heic-decode as fallback...');
           
           try {
-            const heicDecode = await import('heic-decode');
+            const heicDecodeModule = await import('heic-decode');
             
             console.log('heic-decode loaded, attempting conversion...');
             
-            // Decode using heic-decode
-            const { data, width, height } = await heicDecode.decode({ 
+            // Get the decode function
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
+            const decode = heicDecodeModule.default || (heicDecodeModule as unknown as { decode: Function }).decode;
+            
+            if (typeof decode !== 'function') {
+              throw new Error('heic-decode library API not found or not a function');
+            }
+            
+            console.log('decode function found, starting conversion...');
+            
+            // Decode using heic-decode with correct API
+            const decodedData = await decode({ 
               buffer: arrayBuffer.slice(0) // Create a copy of the buffer
             });
+            
+            const { data, width, height } = decodedData;
             
             console.log(`heic-decode successful: ${width}x${height}`);
             
@@ -165,7 +177,69 @@ export default function HeicConverter() {
             
           } catch (heicDecodeError) {
             console.error('❌ heic-decode also failed:', heicDecodeError);
-            throw new Error(`Both conversion libraries failed. This HEIC file variant may not be supported. Try converting the image to JPEG on your device first, or use a different HEIC file.`);
+            
+            // Since both libraries failed, let's try a different approach
+            console.log('Trying alternative canvas-based approach...');
+            
+            try {
+              // Try browser native support as last resort
+              const img = document.createElement('img');
+              const canvas = document.createElement('canvas');
+              const ctx = canvas.getContext('2d');
+              
+              if (!ctx) {
+                throw new Error('Canvas not supported');
+              }
+
+              return new Promise<ConvertedFile>((resolve, reject) => {
+                img.onload = () => {
+                  try {
+                    canvas.width = img.naturalWidth || img.width;
+                    canvas.height = img.naturalHeight || img.height;
+                    ctx.drawImage(img, 0, 0);
+                    
+                    canvas.toBlob((blob) => {
+                      URL.revokeObjectURL(img.src); // Clean up
+                      
+                      if (blob && blob.size > 0) {
+                        const url = URL.createObjectURL(blob);
+                        const name = file.name.replace(/\.heic$/i, '.png').replace(/\.heif$/i, '.png');
+                        
+                        console.log(`✅ Browser native conversion successful: ${name}`);
+                        
+                        resolve({
+                          name,
+                          url,
+                          blob,
+                        });
+                      } else {
+                        reject(new Error('Canvas to blob conversion failed'));
+                      }
+                    }, 'image/png', 1.0);
+                  } catch (error) {
+                    URL.revokeObjectURL(img.src);
+                    reject(error);
+                  }
+                };
+                
+                img.onerror = () => {
+                  URL.revokeObjectURL(img.src);
+                  reject(new Error('All conversion methods failed. Your browser or this specific HEIC file variant is not supported.'));
+                };
+                
+                img.src = URL.createObjectURL(file);
+                
+                // Timeout after 10 seconds
+                setTimeout(() => {
+                  URL.revokeObjectURL(img.src);
+                  reject(new Error('Conversion timeout'));
+                }, 10000);
+              });
+              
+            } catch (nativeError) {
+              console.error('❌ Native browser conversion also failed:', nativeError);
+              throw new Error(`All conversion methods failed. This HEIC file variant is not supported by available libraries. Try:\n1. Converting to JPEG on your iPhone first\n2. Using a different HEIC file\n3. Using a different browser (Safari, Chrome, Firefox)`);
+            }
           }
         } else {
           // Re-throw other heic2any errors with better messages
